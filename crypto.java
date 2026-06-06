@@ -1,15 +1,20 @@
 import java.security.*;
 import java.security.spec.EncodedKeySpec;
+import java.security.spec.KeySpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.time.temporal.Temporal;
 import java.util.Base64;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import javax.crypto.Cipher;  
-
+import javax.crypto.Cipher; 
+import javax.crypto.SecretKey;
+import javax.crypto.spec.*;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKeyFactory;
 class Key_Handler{
     String algoritmo;
     KeyPairGenerator gerador;
@@ -76,52 +81,108 @@ class Key_Handler{
         return null;  
     }   
 }
-class EncryptDecrypt{
-    public void encrypt(PublicKey public_key, String file_to_be_encrypted, String output){
+class EncryptDecryptRSA{
+    public void encrypt(PublicKey public_key, SecretKey aes_secret_key, String encrypted_secret_key_path){
         try(
-            FileOutputStream fos = new FileOutputStream(output);
+            FileOutputStream fos = new FileOutputStream(encrypted_secret_key_path);
         ) {
 
-            Cipher encrypter = Cipher.getInstance("RSA");
+            Cipher encrypter = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
             encrypter.init(Cipher.ENCRYPT_MODE, public_key);
             //necessário receber a versão binária do arquivo  
-            File arquivo = new File(file_to_be_encrypted); 
-            if(!arquivo.exists() || !arquivo.canRead()){
-                return;
-            }
-            byte[] arquivo_bytes = Files.readAllBytes(arquivo.toPath());
-            byte[] arquivo_encriptado = encrypter.doFinal(arquivo_bytes);
-            String arquivo_codificado = Base64.getEncoder().encodeToString(arquivo_encriptado);
-            byte[] bytes_arquivo_codificado = arquivo_codificado.getBytes(StandardCharsets.UTF_8);
-            fos.write(bytes_arquivo_codificado);
-            fos.close();   
+            byte[] bytes_aes_key = aes_secret_key.getEncoded();
+            byte[] aes_key_encrypted = encrypter.doFinal(bytes_aes_key);
+            fos.write(aes_key_encrypted); 
 
         } catch (Exception e){ 
             e.printStackTrace();
         }
-    }
-    public void decrypt(PrivateKey private_key, String encrypted_file, String decrypted_file){ 
-        try(
-            FileOutputStream fos = new FileOutputStream(decrypted_file);
-        ) {
-            Cipher decrypter = Cipher.getInstance("RSA");
-            decrypter.init(Cipher.DECRYPT_MODE, private_key);
-            File arquivo_encriptado = new File(encrypted_file);
-            if(!arquivo_encriptado.exists() || !arquivo_encriptado.canRead()){
-                return;
-            }
-            byte[] bytes_arquivo = Files.readAllBytes(arquivo_encriptado.toPath()); 
-            byte[] arquivo_desencodado = Base64.getDecoder().decode(bytes_arquivo);
-            byte[] arquivo_desencriptado = decrypter.doFinal(arquivo_desencodado);
-            String plaintext = new String(arquivo_desencriptado, StandardCharsets.UTF_8);
-            byte[] bytes_texto = plaintext.getBytes(StandardCharsets.UTF_8);
-            fos.write(bytes_texto); 
+    }  
+    public SecretKey decrypt(File encrypted_aes_key, PrivateKey rsaPrivateKey){
+        try{
+            Cipher decrypter = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+            decrypter.init(Cipher.DECRYPT_MODE, rsaPrivateKey );
+            byte[] bytes_encrypted_aes_key = Files.readAllBytes(encrypted_aes_key.toPath()); 
+            byte[] bytes_decrypted_aes_key = decrypter.doFinal(bytes_encrypted_aes_key); 
+            SecretKeySpec aes_key_spec = new SecretKeySpec(bytes_decrypted_aes_key, "AES");
+            return aes_key_spec;
+
         } catch (Exception e) {
-            e.printStackTrace();  
+            e.printStackTrace();
+        }
+        return null;
+    }
+    
+} 
+class EncryptDecryptAES{ 
+    //parâmetro N é a quantidade de bits, ex : 128, 256
+    public SecretKey gerarSenha(int n) throws Exception{
+        KeyGenerator gerador_chaves = KeyGenerator.getInstance("AES"); 
+        gerador_chaves.init(n); 
+        SecretKey chave_secreta = gerador_chaves.generateKey();
+        return chave_secreta;
+    }
+    public SecretKey gerarSenha(String senha, String salt) throws Exception{
+        SecretKeyFactory fabrica = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+        //256 é a quantidade de bits da chave, 65536 iterações
+        KeySpec specs = new PBEKeySpec(senha.toCharArray(), salt.getBytes(), 65536, 256);
+        SecretKey chave_secreta = new SecretKeySpec(fabrica.generateSecret(specs).getEncoded(), "AES"); 
+        return chave_secreta;
+    }
+    public byte[] gerarIv(){
+        byte[] iv = new byte[12];
+        new SecureRandom().nextBytes(iv);
+        return iv;
+    }
+    public void encrypt(File input_file, byte[] iv, SecretKey key, String output_path){
+        try(
+            FileOutputStream fos = new FileOutputStream(output_path);
+        ) { 
+            GCMParameterSpec iv_spec = new GCMParameterSpec(128, iv);
+            Cipher encrypter = Cipher.getInstance("AES/GCM/NoPadding");
+            encrypter.init(Cipher.ENCRYPT_MODE, key, iv_spec);
+            byte[] bytes_file = Files.readAllBytes(input_file.toPath());
+            byte[] encrypted_file = encrypter.doFinal(bytes_file);
+            fos.write(iv);
+            fos.write(encrypted_file); 
+        
+        } catch (Exception e) {
+            e.printStackTrace();
         }
     }
+    public void decrypt(File encrypted_file, SecretKey key, String output_path){
+        try (
+            FileOutputStream fos = new FileOutputStream(output_path);
+            BufferedInputStream  bis = new BufferedInputStream(new FileInputStream(encrypted_file)); 
+        ) {
+            byte[] iv = new byte[12];
+            bis.read(iv);
+            GCMParameterSpec iv_spec = new GCMParameterSpec(128, iv);
+            Cipher decrypter = Cipher.getInstance("AES/GCM/NoPadding");
+            decrypter.init(Cipher.DECRYPT_MODE, key, iv_spec);  
+            //criar acumulador
+            ByteArrayOutputStream acumulador = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int i;
+            while((i = bis.read(buffer)) != -1){
+                acumulador.write(
+                    buffer,
+                    0,
+                    i
+                );
+            }
+            byte[] encrypted_file_bytes = acumulador.toByteArray();
+            byte[] decrypted_file = decrypter.doFinal(encrypted_file_bytes);
+            fos.write(decrypted_file);
+
+        
+        } catch (Exception e) {
+            e.printStackTrace(); 
+        }
+
+    }
 }
-public class crypto{   
+public class crypto{    
 
 
     public static void main(String[] args) {
@@ -133,8 +194,6 @@ public class crypto{
         PublicKey pub_key = chaves.getPublic();
         PrivateKey priv_key = chaves.getPrivate(); 
         String arquivo_teste = "teste.txt";
-        EncryptDecrypt tech = new EncryptDecrypt();
-        tech.encrypt(pub_key, arquivo_teste, "arquivo_teste_encriptado.txt");
-        tech.decrypt(priv_key, "arquivo_teste_encriptado.txt", "arquivo_teste_decriptado.txt");
+        EncryptDecryptRSA tech = new EncryptDecryptRSA();
     }
 }

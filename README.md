@@ -1,2 +1,2 @@
-# simple_safe_message_sender_projeto
-pequeno projeto em JAVA usando sockets, RSA-2048, e AES-256 para criptografia das mensagens
+**#SERVIDOR WEB SIMPLES**
+Esse projeto tem o objetivo de realizar a criação de um servidor web simples, que recebe e responde a requisições HTTP(HTTPS no futuro) 

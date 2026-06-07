@@ -3,24 +3,25 @@ import java.security.spec.EncodedKeySpec;
 import java.security.spec.KeySpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
-import java.time.temporal.Temporal;
-import java.util.Base64;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import javax.crypto.Cipher; 
 import javax.crypto.SecretKey;
 import javax.crypto.spec.*;
 import javax.crypto.KeyGenerator;
+import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKeyFactory;
-class Key_Handler{
+import java.io.BufferedInputStream;
+import java.io.ByteArrayOutputStream;
+
+class Key_HandlerRSA{
     String algoritmo;
     KeyPairGenerator gerador;
     PublicKey chave_publica;
     PrivateKey chave_privada;
-    public Key_Handler(String algoritmo, int qtdBits){
+    public Key_HandlerRSA(String algoritmo, int qtdBits){
         this.algoritmo = algoritmo;
         try {
             this.gerador = KeyPairGenerator.getInstance(algoritmo); 
@@ -33,7 +34,6 @@ class Key_Handler{
             e.printStackTrace();
         }
     }
-    //gera as chaves pública e privadas e as armazena em arquivos
     public void criar_arquivos(String saida_chave_publica, String saida_chave_privada){ 
         //escreve as chaves em arquivos, para que não permaneçam apenas na memória
         try {
@@ -134,7 +134,7 @@ class EncryptDecryptAES{
         new SecureRandom().nextBytes(iv);
         return iv;
     }
-    public void encrypt(File input_file, byte[] iv, SecretKey key, String output_path){
+    public void encrypt(File input_file, byte[] iv, SecretKey key, String output_path) throws NoSuchAlgorithmException, NoSuchPaddingException{
         try(
             FileOutputStream fos = new FileOutputStream(output_path);
         ) { 
@@ -180,20 +180,5 @@ class EncryptDecryptAES{
             e.printStackTrace(); 
         }
 
-    }
-}
-public class crypto{    
-
-
-    public static void main(String[] args) {
-        Key_Handler gerenciador = new Key_Handler("RSA", 2048);
-        String filename_chavepublica = "chave_publica";
-        String filename_chaveprivada = "chave_privada";
-        gerenciador.criar_arquivos(filename_chavepublica, filename_chaveprivada);
-        KeyPair chaves = gerenciador.lerChave(filename_chavepublica, filename_chaveprivada);     
-        PublicKey pub_key = chaves.getPublic();
-        PrivateKey priv_key = chaves.getPrivate(); 
-        String arquivo_teste = "teste.txt";
-        EncryptDecryptRSA tech = new EncryptDecryptRSA();
     }
 }

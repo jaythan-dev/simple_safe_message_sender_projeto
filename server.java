@@ -7,13 +7,15 @@ import java.io.*;
 
 //contém os métodos relacionados ao servidor, como ligar, desligar, gerenciamento de portas 
 class Server{
+    int porta;
     ServerConnectionHandler serverConnectionHandler;
     public Server(int porta){
+        this.porta = porta;
         this.serverConnectionHandler = new ServerConnectionHandler(porta);
     } 
     public void start(){ 
         serverConnectionHandler.servidor_ligado = true;
-        serverConnectionHandler.start();  
+        serverConnectionHandler.start();
     }
     public void stop(){
         serverConnectionHandler.servidor_ligado = false;
@@ -36,9 +38,11 @@ class ServerConnectionHandler{
     }
     public void start(){  
         servidor_ligado = true; 
+        System.out.println("Servidor rodando!" + "\n" + "http://localhost:12345");
         try {  
             while(servidor_ligado){   
                 Socket conn = server.accept(); 
+                
                 Thread t = new Thread(new Runnable(){
                     @Override
                     public void run(){
@@ -72,7 +76,6 @@ class HttpRequest{
     private HashMap<String, String> headers;
     private Map<String, String> queryParams; 
     private byte[] body; 
-    private InetAddress remoteAddress; 
     public HttpRequest(
         String method, String path, String version
     ) 
@@ -103,33 +106,28 @@ class HttpRequest{
     public byte[] getBody(){
         return this.body;
     } 
-    public InetAddress getAddress(){
-        return remoteAddress;  
-    }
     public void addHeader(String key, String valor){
-        headers.put(key.toLowerCase(), valor);
+        headers.put(key, valor);
     }  
     public void addParam(String key, String valor){
-        queryParams.put(key.toLowerCase(), valor);
-    } 
-    public void setBody(String valor){
-        
-    } 
-    public void setAddress(Socket address){
-        this.remoteAddress = address.getInetAddress();
+        queryParams.put(key, valor);
     } 
     public void setBody(byte[] body){
         this.body = body;
     } 
     @Override
     public String toString() {
-        System.out.println(
-            this.method + " " + this.path + " " + this.version + "\n"
+        StringBuilder b = new StringBuilder();
+        b.append(method).append(" ")
+        .append(path).append(" ")
+        .append(version).append("\n");
+        headers.forEach((k, v) ->
+            b.append(k).append(":").append(" ").append(v).append("\n")
+
         );
-        headers.forEach((chave, valor)->{
-            System.out.println(chave + ": " + valor);
-        });
-        return super.toString();
+        b.append("\n");
+        b.append(new String(body, StandardCharsets.UTF_8));
+        return b.toString();
     }
 }
 class HttpResponse{
@@ -361,7 +359,7 @@ class HttpRequestHandler{
     }
     public void processRequest(InputStream is){   
         HttpRequest req = parser.parseRequest(is);
-        System.out.println(req); 
+        System.out.println(req.toString()); 
     }
 }
 

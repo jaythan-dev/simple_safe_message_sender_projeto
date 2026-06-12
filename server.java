@@ -2,8 +2,12 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
+import java.util.stream.Stream;
 import java.io.*;
+import java.util.Arrays;
+import java.nio.file.*;
 
 //contém os métodos relacionados ao servidor, como ligar, desligar, gerenciamento de portas 
 class Server{
@@ -25,12 +29,15 @@ class Server{
 class ServerConnectionHandler{
     boolean servidor_ligado;
     HttpRequestHandler handler;
+    HttpResponseHandler res_handler; 
     ServerSocket server;    
+
     
     public ServerConnectionHandler(int porta){
         try {
             this.server = new ServerSocket(porta);    
             this.handler = new HttpRequestHandler(); 
+            this.res_handler = new HttpResponseHandler(); 
         } catch (Exception e) {
             e.printStackTrace();   
         } 
@@ -47,7 +54,12 @@ class ServerConnectionHandler{
                     @Override
                     public void run(){
                         try {
-                            handler.processRequest(conn.getInputStream());
+                            HttpRequest req = handler.processRequest(conn.getInputStream());    
+                            HttpResponse res = res_handler.processRequest(req);    
+                            OutputStream output = conn.getOutputStream();
+                            res.escreverResposta(output);
+                            output.flush();
+                            conn.close();
                         } catch (Exception e) {
                             e.printStackTrace();
                         }
@@ -129,10 +141,8 @@ class HttpRequest{
         b.append(new String(body, StandardCharsets.UTF_8));
         return b.toString();
     }
-}
-class HttpResponse{
-    
-}
+}  
+
 class HttpValidation{ 
     public static boolean validarMétodo(String method){
         try {
@@ -329,13 +339,13 @@ class HttpParser{
                 if(bytes_l == -1){
                     throw new IllegalArgumentException("Requisição inválida!");
                 }
-                int bytes_usados = Integer.min(bytes_lidos, bytes_faltantes);
+                int bytes_usados = Integer.min(bytes_l, bytes_faltantes);
                 acumulador_body.write(buffer_body, 0, bytes_usados);           
                 bytes_faltantes -= bytes_usados;  
                 
             }
             byte[] bytes_body = acumulador_body.toByteArray();
-            req.setBody(bytes_body); 
+            req.setBody(bytes_body);   
             return req;
             
 
@@ -357,12 +367,130 @@ class HttpRequestHandler{
     public HttpRequestHandler(){
         this.parser = new HttpParser(); 
     }
-    public void processRequest(InputStream is){   
+    public HttpRequest processRequest(InputStream is){   
         HttpRequest req = parser.parseRequest(is);
         System.out.println(req.toString()); 
+        return req;
+    }
+} 
+enum HttpStatusCodes{
+    FOUND, NOT_FOUND, BAD_REQUEST, OK, INTERNAL_SERVER_ERROR, FORBIDDEN
+}
+enum HttpRequestStatus{
+    PROCESSING,
+
+    SUCCEDED,
+
+    FAILED   
+}
+
+class HttpResponseHandler{    
+    String rootDir;      
+    public HttpResponseHandler(){
+        //futuramente adicionar um arquivo de configuração que contém o rootdir  
+        this.rootDir = "dir/";
+    }
+    public HttpResponse processRequest(HttpRequest req){
+        //primeiro, descobre o método
+        String method = String.valueOf(req.getMethod());   
+        String version = String.valueOf(req.getVersion());
+        //caso o método seja get : 
+        String alvo = req.getPath();  
+        if(alvo == null || alvo.isBlank()){
+            alvo = "index.html";
+        }
+        if(method.equalsIgnoreCase("GET")){
+            //checa se o path existe(DIRETÓRIO DE BUSCA PADRÃO)     
+            if(alvo.startsWith("/")){
+                alvo = alvo.substring(1); 
+            }    
+            //proteção básica contra path traversal
+            Path base = Paths.get(rootDir).toAbsolutePath().normalize();
+            Path resolved = base.resolve(alvo).normalize();
+            if(!resolved.startsWith(base)){
+                return new HttpResponse(version, 403, String.valueOf(HttpStatusCodes.FORBIDDEN)); 
+            }
+            try {
+                if(Files.isDirectory(resolved)){ 
+                    resolved = resolved.resolve("index.html");  
+                }
+                if(!Files.isRegularFile(resolved)){
+                    return new HttpResponse(version, 404, String.valueOf(HttpStatusCodes.NOT_FOUND));
+                }
+                byte[] body = Files.readAllBytes(resolved);
+                HttpResponse res = new HttpResponse(version, 200, String.valueOf(HttpStatusCodes.OK ));
+                res.setBody(body); 
+                res.addHeader("Content-Length", String.valueOf(body.length));
+                String mime = Files.probeContentType(resolved);  
+                
+                if(mime == null){
+                    String nome = resolved.getFileName().toString();
+                    if(nome.endsWith(".html")){mime = "text/html";}
+                    else if(nome.endsWith(".css")){mime = "text/css";}
+                    else if(nome.endsWith(".js")){mime = "application/javascript";} 
+                    else if(nome.endsWith(".png")){mime = "image/png";}
+                    else if(nome.endsWith(".jpeg")){mime = "image/jpeg";}
+                    else mime = "application/octet-stream";
+
+                    
+                }
+                res.addHeader("Content-Type", mime);
+                return res;  
+            } catch (Exception e) {    
+                return new HttpResponse(version, 500, String.valueOf(HttpStatusCodes.INTERNAL_SERVER_ERROR));
+            }
+        
+        }
+    return new HttpResponse(version, 400, String.valueOf(HttpStatusCodes.BAD_REQUEST)); 
     }
 }
 
+class HttpResponse{ 
+
+    //linha de status
+    private String version;
+    private int codigo;
+    private String reason_phrase; 
+    //headers http  
+    private HashMap<String, String> headers;
+    //corpo 
+    private byte[] message_body;
+    public HttpResponse(String ver, int cod, String reason){
+        this.version = ver;
+        this.codigo = cod;
+        this.reason_phrase = reason;
+        this.headers = new HashMap<String, String>();
+        this.message_body = new byte[0]; 
+          
+    }  
+    public void addHeader(String chave, String valor){  
+        this.headers.put(chave, valor);
+    }
+    public void setBody(byte[] body){
+        this.message_body = body;  
+    }  
+    public void setPhrase(HttpStatusCodes status){
+        this.reason_phrase = String.valueOf(status);   
+    }
+    public void setCodigo(int cod){
+        this.codigo = cod; 
+    }
+    public void escreverResposta(OutputStream out) throws IOException{
+        StringBuilder builder = new StringBuilder();
+        //primeiro a request line   
+        builder.append(this.version).append(" ").append(this.codigo).append(" ")
+        .append(this.reason_phrase).append("\r\n");
+        headers.forEach((k, v) ->
+            builder.append(k).append(":").append(" ").append(v).append("\r\n")
+        );
+        builder.append("\r\n"); 
+        out.write(builder.toString().getBytes(StandardCharsets.UTF_8));
+        if(message_body != null){
+            out.write(message_body);
+        }
+        
+    }
+}
 
 public class server{
     public static void main(String[] args) {

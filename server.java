@@ -2,11 +2,7 @@ import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
-import java.util.Queue;
-import java.util.stream.Stream;
 import java.io.*;
-import java.util.Arrays;
 import java.nio.file.*;
 
 //contém os métodos relacionados ao servidor, como ligar, desligar, gerenciamento de portas 
@@ -55,10 +51,10 @@ class ServerConnectionHandler{
                     public void run(){
                         try {
                             HttpRequest req = handler.processRequest(conn.getInputStream());    
-                            HttpResponse res = res_handler.processRequest(req);    
+                            HttpResponse res = res_handler.handleRequest(req);
                             OutputStream output = conn.getOutputStream();
                             res.escreverResposta(output);
-                            output.flush();
+                            output.flush();      
                             conn.close();
                         } catch (Exception e) {
                             e.printStackTrace();
@@ -374,28 +370,33 @@ class HttpRequestHandler{
     }
 } 
 enum HttpStatusCodes{
-    FOUND, NOT_FOUND, BAD_REQUEST, OK, INTERNAL_SERVER_ERROR, FORBIDDEN
-}
-enum HttpRequestStatus{
-    PROCESSING,
+    OK (200, "OK"),
+    BAD_REQUEST(400, "Bad Request"),
+    NOT_FOUND(404, "Not Found"),
+    INTERNAL_SERVER_ERROR(500,"Internal Server Error");
 
-    SUCCEDED,
-
-    FAILED   
-}
-
-class HttpResponseHandler{    
-    String rootDir;      
-    public HttpResponseHandler(){
-        //futuramente adicionar um arquivo de configuração que contém o rootdir  
-        this.rootDir = "dir/";
+    private final int code;
+    private final String phrase;
+    HttpStatusCodes(int code, String phrase){ 
+        this.code = code;
+        this.phrase = phrase;
     }
-    public HttpResponse processRequest(HttpRequest req){
-        //primeiro, descobre o método
+    public int code(){return code;}
+    public String phrase(){return phrase;}
+}
+
+interface ResponseHandler{  
+    HttpResponse handle(HttpRequest request); 
+}
+class GetHandler implements ResponseHandler{
+    @Override
+    public HttpResponse handle(HttpRequest req) {
+        String rootDir = "dir";  
         String method = String.valueOf(req.getMethod());   
         String version = String.valueOf(req.getVersion());
         //caso o método seja get : 
         String alvo = req.getPath();  
+        HttpResponse.ResponseBuilder builder = HttpResponse.builder();
         if(alvo == null || alvo.isBlank()){
             alvo = "index.html";
         }
@@ -407,79 +408,130 @@ class HttpResponseHandler{
             //proteção básica contra path traversal
             Path base = Paths.get(rootDir).toAbsolutePath().normalize();
             Path resolved = base.resolve(alvo).normalize();
+
             if(!resolved.startsWith(base)){
-                return new HttpResponse(version, 403, String.valueOf(HttpStatusCodes.FORBIDDEN)); 
+                return HttpResponse.of(HttpStatusCodes.NOT_FOUND);
             }
             try {
                 if(Files.isDirectory(resolved)){ 
                     resolved = resolved.resolve("index.html");  
                 }
                 if(!Files.isRegularFile(resolved)){
-                    return new HttpResponse(version, 404, String.valueOf(HttpStatusCodes.NOT_FOUND));
+                    return HttpResponse.of(HttpStatusCodes.NOT_FOUND);
+                    
+                    
                 }
                 byte[] body = Files.readAllBytes(resolved);
-                HttpResponse res = new HttpResponse(version, 200, String.valueOf(HttpStatusCodes.OK ));
-                res.setBody(body); 
-                res.addHeader("Content-Length", String.valueOf(body.length));
                 String mime = Files.probeContentType(resolved);  
                 
                 if(mime == null){
-                    String nome = resolved.getFileName().toString();
-                    if(nome.endsWith(".html")){mime = "text/html";}
-                    else if(nome.endsWith(".css")){mime = "text/css";}
-                    else if(nome.endsWith(".js")){mime = "application/javascript";} 
-                    else if(nome.endsWith(".png")){mime = "image/png";}
-                    else if(nome.endsWith(".jpeg")){mime = "image/jpeg";}
-                    else mime = "application/octet-stream";
-
-                    
+                    return HttpResponse.of(HttpStatusCodes.BAD_REQUEST);
                 }
-                res.addHeader("Content-Type", mime);
+                String nome = resolved.getFileName().toString();
+                if(nome.endsWith(".html")){mime = "text/html";}
+                else if(nome.endsWith(".css")){mime = "text/css";}
+                else if(nome.endsWith(".js")){mime = "application/javascript";} 
+                else if(nome.endsWith(".png")){mime = "image/png";}
+                else if(nome.endsWith(".jpeg")){mime = "image/jpeg";}
+                else mime = "application/octet-stream";
+
+                HttpResponse res = builder.version(version)
+                .status(HttpStatusCodes.OK)
+                .headers("Content-Type", mime)
+                .headers("Content-Length", String.valueOf(body.length))
+                .body(body)
+                .build();
                 return res;  
-            } catch (Exception e) {    
-                return new HttpResponse(version, 500, String.valueOf(HttpStatusCodes.INTERNAL_SERVER_ERROR));
-            }
-        
+                
+                
+            } catch (Exception e) {   
+                return HttpResponse.of(HttpStatusCodes.BAD_REQUEST);
+            } 
+            
         }
-    return new HttpResponse(version, 400, String.valueOf(HttpStatusCodes.BAD_REQUEST)); 
+        return HttpResponse.of(HttpStatusCodes.INTERNAL_SERVER_ERROR);
+    }  
+}
+  
+class ResponseHandlerFactory{ 
+    public static ResponseHandler create(String method){
+
+        switch (method.toUpperCase()) {
+            case "GET":
+                return new GetHandler();
+            default:
+                throw new IllegalArgumentException("Método inválido!");
+        }        
     }
 }
 
-class HttpResponse{ 
+
+class HttpResponseHandler{    
+    public HttpResponse handleRequest(HttpRequest req){
+        ResponseHandler handler = ResponseHandlerFactory.create(String.valueOf(req.getMethod()));
+        return handler.handle(req);
+    }
+}
+
+final class HttpResponse{ 
 
     //linha de status
-    private String version;
-    private int codigo;
-    private String reason_phrase; 
+    private final String version;
+    private final HttpStatusCodes status;
     //headers http  
-    private HashMap<String, String> headers;
+    private final HashMap<String, String> headers;
     //corpo 
-    private byte[] message_body;
-    public HttpResponse(String ver, int cod, String reason){
-        this.version = ver;
-        this.codigo = cod;
-        this.reason_phrase = reason;
-        this.headers = new HashMap<String, String>();
-        this.message_body = new byte[0]; 
-          
-    }  
-    public void addHeader(String chave, String valor){  
-        this.headers.put(chave, valor);
+    private final byte[] message_body;
+    public HttpResponse(ResponseBuilder builder){
+        this.headers = new HashMap<>(builder.headers);
+        this.version = builder.version;
+        this.status = builder.status;
+        this.message_body = builder.message_body;
     }
-    public void setBody(byte[] body){
-        this.message_body = body;  
-    }  
-    public void setPhrase(HttpStatusCodes status){
-        this.reason_phrase = String.valueOf(status);   
+
+    public String getVersion(){return version;}
+    public static ResponseBuilder builder(){
+        return new ResponseBuilder();
     }
-    public void setCodigo(int cod){
-        this.codigo = cod; 
+    public static class ResponseBuilder{
+        private String version;
+        private HttpStatusCodes status;
+        //headers http  
+        private HashMap<String, String> headers = new HashMap<>();
+        //corpo 
+        private byte[] message_body; 
+
+        public ResponseBuilder version(String version){
+            if(HttpValidation.validarVersao(version)){
+                this.version = version;
+                return this;
+            } else{
+                throw new IllegalArgumentException("Versão inválida!");
+            }  
+        }
+        public ResponseBuilder status(HttpStatusCodes status){
+            this.status = status;
+            return this;
+        }
+
+        public ResponseBuilder headers(String chave, String valor){
+            this.headers.put(chave, valor);
+            return this;
+        }
+        public ResponseBuilder body(byte[] body){
+            this.message_body = body;
+            return this;
+        }
+        public HttpResponse build(){
+            return new HttpResponse(this); 
+        }
     }
     public void escreverResposta(OutputStream out) throws IOException{
         StringBuilder builder = new StringBuilder();
         //primeiro a request line   
-        builder.append(this.version).append(" ").append(this.codigo).append(" ")
-        .append(this.reason_phrase).append("\r\n");
+        builder.append(this.version).append(" ").append(this.status.code()).append(" ")
+        .append(this.status.phrase())
+        .append("\r\n");
         headers.forEach((k, v) ->
             builder.append(k).append(":").append(" ").append(v).append("\r\n")
         );
@@ -490,7 +542,15 @@ class HttpResponse{
         }
         
     }
+    public static HttpResponse of(HttpStatusCodes status){
+        return builder()
+        .version("HTTP1_1")
+        .status(status)
+        .build();
+        
+    }
 }
+
 
 public class server{
     public static void main(String[] args) {
